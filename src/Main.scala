@@ -17,10 +17,10 @@ object Main {
     }
     val tokenList = createTokenList(ArrayBuffer[Token]())
     //println(tokenList)
-    val parser = new Parser(tokenList.toIterator)
+    val parser = new Parser(tokenList.iterator.buffered)
     val ast = parser.parseProgram
-    //println(ast)
-    val output = CodeGen.genCode(ast)
+    //print(ast.toString)
+    val output = CodeGen.genProg(ast)
     //println(output)
 
     val file = new File(fileName.substring(0, fileName.length -1)+"s")
