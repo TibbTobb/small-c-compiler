@@ -35,6 +35,8 @@ case object Xor extends Token
 case object DoubleLessThan extends Token
 case object DoubleGreaterThan extends Token
 
+case object Equal extends Token
+
 case class LexError(message: String) extends Exception(message)
 
 class Lexer(buffer: collection.BufferedIterator[Char]) {
@@ -90,7 +92,7 @@ class Lexer(buffer: collection.BufferedIterator[Char]) {
       }
       case '=' => advance; lookAhead match {
         case Some('=') => advance;Some(DoubleEqual)
-        case _ => throw LexError("Invalid character =")
+        case _ => Some(Equal)
       }
       case '<' => advance; lookAhead match {
         case Some('=') => advance; Some(LessThanOrEqual)

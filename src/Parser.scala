@@ -1,10 +1,26 @@
+import scala.collection.mutable.ArrayBuffer
 
 abstract class AstNode
 
-abstract class Exp extends AstNode
-case class BinOp(binaryOp: BinaryOp, exp: Exp, next_exp: Exp) extends Exp {
-  override def toString: String = "("+exp.toString+binaryOp.toString+next_exp.toString+")"
+abstract class Program extends AstNode
+case class Prog(funDecl: FunDecl) extends Program {
+  override def toString: String = funDecl.toString
 }
+
+abstract class FunDecl extends AstNode
+case class Fun(id: String, statementList: List[Statement]) extends FunDecl {
+  override def toString: String = "FUN " + id + ":\n" + statementList.toString
+}
+
+abstract class Statement extends AstNode
+case class Return(exp: Exp) extends Statement {
+  override def toString: String = "RETURN " + exp.toString
+}
+case class Declare(id: String, exp : Option[Exp]) extends Statement
+
+abstract class Exp extends Statement
+case class Assign(id:String, exp: Exp) extends Exp
+case class Var(id:String) extends Exp
 case class UnOp(unaryOp: UnaryOp, exp: Exp) extends Exp {
   override def toString: String = "("+unaryOp.toString+exp.toString+")"
 }
@@ -13,20 +29,11 @@ case class Const(int: Int) extends Exp {
   override def toString: String = int.toString
 }
 
-abstract class Statement extends AstNode
-case class Return(exp: Exp) extends Statement {
-  override def toString: String = "RETURN " + exp.toString
+case class BinOp(binaryOp: BinaryOp, exp: Exp, next_exp: Exp) extends Exp {
+  override def toString: String = "("+exp.toString+binaryOp.toString+next_exp.toString+")"
 }
 
-abstract class FunDecl extends AstNode
-case class Fun(id: String, statement: Statement) extends FunDecl {
-  override def toString: String = "FUN " + id + ":\n" + statement.toString
-}
 
-abstract class Program extends AstNode
-case class Prog(funDecl: FunDecl) extends Program {
-  override def toString: String = funDecl.toString
-}
 
 abstract class UnaryOp extends AstNode
 case object OpNegation extends UnaryOp {
@@ -100,13 +107,15 @@ case object OpShiftRight extends BinaryOp{
 
 case class ParseError(message: String) extends Exception(message)
 
-class Parser(buffer: collection.BufferedIterator[Token]) {
+class Parser(tokens: List[Token]) {
+  var position = 0
   def parseErrorMessage(expectedToken: Token, actualToken: Token): String = "expecting token "+expectedToken+
     " found token "+actualToken
   def parseErrorMessage(expectedAst: String, actualToken: Token) : String = "expecting node of Ast type  "+expectedAst+
     " found token "+actualToken
-  private def advance = buffer next
-  private def lookAhead = buffer head
+  private def advance:Token = {position+=1;tokens(position-1)}
+  private def lookAhead:Token = tokens(position)
+  private def lookAhead2Option = if(tokens.length>(position+1)) Some(tokens(position+1)) else None
   private def eat(t:Token): Unit = {
     val token = advance
     if(t != token)
@@ -137,7 +146,11 @@ class Parser(buffer: collection.BufferedIterator[Token]) {
     case DoubleLessThan => OpShiftLeft
     case DoubleGreaterThan => OpShiftRight
   }
-  private def parseExp : Exp = {
+  private def parseExp : Exp = lookAhead match {
+      case Identifier(id) if lookAhead2Option.contains(Equal) => advance;advance;val e = parseExp;Assign(id,e)
+      case _ => parseLogicalOrExpr
+    }
+  private def parseLogicalOrExpr : Exp = {
     var exp = parseLogicalAndExpr
     while(lookAhead == DoubleOr) {
       val op = getBinOp(advance)
@@ -232,13 +245,13 @@ class Parser(buffer: collection.BufferedIterator[Token]) {
     case OpenParenthesis => val exp = parseExp; eat(CloseParenthesis); exp
     case op if op == Minus || op == LogicalNeg || op == BitwiseComp => UnOp(getUnOp(op), parseFactor)
     case IntegerLiteral(n) => Const(n)
+    case Identifier(s) => Var(s)
     case t => throw ParseError(parseErrorMessage("Factor", t))
   }
-  private def parseStatment : Statement = {
-    eat(Keyword("return"))
-    val exp = parseExp
-    eat(Semicolon)
-    Return(exp)
+  private def parseStatement : Statement = lookAhead match {
+    case Keyword("return") =>  advance;val exp = parseExp; eat(Semicolon); Return(exp)
+    case Keyword("int") => advance;val id = parseId; var exp:Option[Exp]=None;if (lookAhead == Equal){advance;exp = Some(parseExp)};eat(Semicolon); Declare(id,exp)
+    case _ => val exp = parseExp; eat(Semicolon);exp
   }
   private def parseFunDecl : FunDecl = {
     eat(Keyword("int"))
@@ -246,9 +259,12 @@ class Parser(buffer: collection.BufferedIterator[Token]) {
     eat(OpenParenthesis)
     eat(CloseParenthesis)
     eat(OpenBrace)
-    val statement = parseStatment
-    eat(CloseBrace)
-    Fun(id, statement)
+    val statementList = new ArrayBuffer[Statement]
+    while(lookAhead != CloseBrace) {
+      statementList.append(parseStatement)
+    }
+    advance
+    Fun(id, statementList.toList)
   }
   def parseProgram : Program = Prog(parseFunDecl)
 
