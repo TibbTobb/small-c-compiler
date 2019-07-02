@@ -8,17 +8,21 @@ case class Prog(funDecl: FunDecl) extends Program {
 }
 
 abstract class FunDecl extends AstNode
-case class Fun(id: String, statementList: List[Statement]) extends FunDecl {
-  override def toString: String = "FUN " + id + ":\n" + statementList.toString
+case class Fun(id: String, blockItemList:List[BlockItem]) extends FunDecl {
+  override def toString: String = "FUN " + id + ":\n" + blockItemList.toString
 }
+abstract class BlockItem extends AstNode
+case class Declare(id: String, exp : Option[Exp]) extends BlockItem
 
-abstract class Statement extends AstNode
+abstract class Statement extends BlockItem
 case class Return(exp: Exp) extends Statement {
   override def toString: String = "RETURN " + exp.toString
 }
-case class Declare(id: String, exp : Option[Exp]) extends Statement
+
+case class If(exp:Exp, statement:Statement, elseStatement:Option[Statement]) extends Statement
 
 abstract class Exp extends Statement
+case class Conditional(cond:Exp,ifExp:Exp,elseExp:Exp) extends Exp
 case class Assign(id:String, exp: Exp) extends Exp
 case class Var(id:String) extends Exp
 case class UnOp(unaryOp: UnaryOp, exp: Exp) extends Exp {
@@ -148,8 +152,17 @@ class Parser(tokens: List[Token]) {
   }
   private def parseExp : Exp = lookAhead match {
       case Identifier(id) if lookAhead2Option.contains(Equal) => advance;advance;val e = parseExp;Assign(id,e)
-      case _ => parseLogicalOrExpr
+      case _ => parseConditionalExpr
     }
+  private def parseConditionalExpr : Exp = {
+    val exp = parseLogicalOrExpr
+    if(lookAhead == QuestionMark) {
+      advance;val ifExp = parseExp;eat(Colon);val elseExp = parseConditionalExpr
+      Conditional(exp,ifExp,elseExp)
+    } else {
+      exp
+    }
+  }
   private def parseLogicalOrExpr : Exp = {
     var exp = parseLogicalAndExpr
     while(lookAhead == DoubleOr) {
@@ -250,8 +263,17 @@ class Parser(tokens: List[Token]) {
   }
   private def parseStatement : Statement = lookAhead match {
     case Keyword("return") =>  advance;val exp = parseExp; eat(Semicolon); Return(exp)
-    case Keyword("int") => advance;val id = parseId; var exp:Option[Exp]=None;if (lookAhead == Equal){advance;exp = Some(parseExp)};eat(Semicolon); Declare(id,exp)
+    case Keyword("if") => advance;eat(OpenParenthesis);val e=parseExp;eat(CloseParenthesis);val s = parseStatement
+      var s2:Option[Statement]=None
+      if(lookAhead==Keyword("else")){
+        advance;s2=Some(parseStatement)}
+      If(e,s,s2)
     case _ => val exp = parseExp; eat(Semicolon);exp
+  }
+  private def parseBlockItem: BlockItem = lookAhead match {
+    case Keyword("int") => advance;val id = parseId; var exp:Option[Exp]=None
+      if (lookAhead == Equal){advance;exp = Some(parseExp)};eat(Semicolon); Declare(id,exp)
+    case _ => parseStatement
   }
   private def parseFunDecl : FunDecl = {
     eat(Keyword("int"))
@@ -259,9 +281,9 @@ class Parser(tokens: List[Token]) {
     eat(OpenParenthesis)
     eat(CloseParenthesis)
     eat(OpenBrace)
-    val statementList = new ArrayBuffer[Statement]
+    val statementList = new ArrayBuffer[BlockItem]
     while(lookAhead != CloseBrace) {
-      statementList.append(parseStatement)
+      statementList.append(parseBlockItem)
     }
     advance
     Fun(id, statementList.toList)

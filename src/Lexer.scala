@@ -37,10 +37,13 @@ case object DoubleGreaterThan extends Token
 
 case object Equal extends Token
 
+case object Colon extends Token
+case object QuestionMark extends Token
+
 case class LexError(message: String) extends Exception(message)
 
 class Lexer(buffer: collection.BufferedIterator[Char]) {
-  private val keyWords = List("int", "return")
+  private val keyWords = List("int", "return", "if", "else")
   private def advance: Char = buffer next
   private def lookAhead: Option[Char] = buffer headOption
   @tailrec
@@ -106,6 +109,8 @@ class Lexer(buffer: collection.BufferedIterator[Char]) {
       }
       case '%' => advance; Some(Percentage)
       case '^' => advance; Some(Xor)
+      case ':' => advance; Some(Colon)
+      case '?' => advance; Some(QuestionMark)
       case _ => throw LexError("Invalid character: "+c)
     }
   }
