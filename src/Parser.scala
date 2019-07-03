@@ -4,14 +4,14 @@ abstract class AstNode
 
 abstract class Program extends AstNode
 
-case class Prog(funDecl: FunDecl) extends Program {
-  override def toString: String = funDecl.toString
+case class Prog(funDeclList: List[FunDecl]) extends Program {
+  override def toString: String = funDeclList.toString
 }
 
 abstract class FunDecl extends AstNode
 
-case class Fun(id: String, blockItemList: List[BlockItem]) extends FunDecl {
-  override def toString: String = "FUN " + id + ":\n" + blockItemList.toString
+case class Fun(name: String, parameters:List[String], blockItemList: List[BlockItem]) extends FunDecl {
+  override def toString: String = "FUN " + name + ":\n"+"Parameters:"+parameters.toString()+"\n"+ blockItemList.toString+"\n"
 }
 
 abstract class BlockItem extends AstNode
@@ -45,6 +45,8 @@ case class Continue() extends Statement
 
 
 abstract class Exp extends AstNode
+
+case class FunCall(name:String,arguments:List[Exp]) extends Exp
 
 case class Conditional(cond: Exp, ifExp: Exp, elseExp: Exp) extends Exp
 
@@ -159,10 +161,10 @@ class Parser(tokens: List[Token]) {
   var position = 0
 
   def parseErrorMessage(expectedToken: Token, actualToken: Token): String = "expecting token " + expectedToken +
-    " found token " + actualToken
+    " found token " + actualToken + " at position " + position
 
   def parseErrorMessage(expectedAst: String, actualToken: Token): String = "expecting node of Ast type  " + expectedAst +
-    " found token " + actualToken
+    " found token " + actualToken + " at position " + position
 
   private def advance: Token = {
     position += 1; tokens(position - 1)
@@ -211,7 +213,9 @@ class Parser(tokens: List[Token]) {
   }
 
   private def parseExp: Exp = lookAhead match {
-    case Identifier(id) if lookAhead2Option.contains(Equal) => advance; advance; val e = parseExp; Assign(id, e)
+    case Identifier(id) if lookAhead2Option.contains(Equal) =>
+      advance; advance
+      val e = parseExp; Assign(id, e)
     case _ => parseConditionalExpr
   }
 
@@ -333,7 +337,19 @@ class Parser(tokens: List[Token]) {
     case OpenParenthesis => val exp = parseExp; eat(CloseParenthesis); exp
     case op if op == Minus || op == LogicalNeg || op == BitwiseComp => UnOp(getUnOp(op), parseFactor)
     case IntegerLiteral(n) => Const(n)
-    case Identifier(s) => Var(s)
+    case Identifier(s) => lookAhead match {
+      case OpenParenthesis => advance
+        var expressions = new ArrayBuffer[Exp]
+        var first = true
+        while (lookAhead != CloseParenthesis) {
+          if (!first) eat(Comma)
+          expressions.append(parseExp)
+          first = false
+        }
+        advance
+        FunCall(s, expressions.toList)
+      case _ => Var(s)
+    }
     case t => throw ParseError(parseErrorMessage("Factor", t))
   }
 
@@ -416,20 +432,32 @@ class Parser(tokens: List[Token]) {
     eat(Keyword("int"))
     val id = parseId
     eat(OpenParenthesis)
-    eat(CloseParenthesis)
-    eat(OpenBrace)
-    val statementList = new ArrayBuffer[BlockItem]
-    while (lookAhead != CloseBrace) {
-      statementList.append(parseBlockItem)
+    val parameters = new ArrayBuffer[String]
+    var first = true
+    while(lookAhead!=CloseParenthesis) {
+      if (!first) eat(Comma)
+      eat(Keyword("int"))
+      parameters.append(parseId)
+      first = false
     }
     advance
-    Fun(id, statementList.toList)
+    val statementList = new ArrayBuffer[BlockItem]
+    if(lookAhead == OpenBrace) {
+      advance
+      while (lookAhead != CloseBrace) {
+        statementList.append(parseBlockItem)
+      }
+      advance
+    } else eat(Semicolon)
+    Fun(id, parameters.toList,statementList.toList)
   }
 
   def parseProgram: Program = {
-    val funDecl = parseFunDecl
-    if(position!=tokens.length) throw ParseError("Expected EOF but " + lookAhead + " read")
-    Prog(funDecl)
+    val funDeclList = new ArrayBuffer[FunDecl]
+    while(position!=tokens.length) {
+      funDeclList.append(parseFunDecl)
+    }
+    Prog(funDeclList.toList)
   }
 
   private def parseId: String = advance match {

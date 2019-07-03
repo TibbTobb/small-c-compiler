@@ -1,22 +1,49 @@
 case class Context(varMap:collection.immutable.HashMap[String,Int],stackIndex:Int,
-                   breakLabel:Option[String],continueLabel:Option[String])
+                   breakLabel:Option[String],continueLabel:Option[String],
+                   funMap:collection.immutable.HashMap[String,(Int,Boolean)])
 
 object CodeGen {
   private var labelNum = 0
-  private var varMap = new collection.immutable.HashMap[String,Int]()
   case class CodeGenError(message: String) extends Exception(message)
   var output = ""
 
   def output(string: String): Unit = output += string
 
   def genProg(ast: Program): String = ast match {
-    case Prog(Fun(id, blockItemList)) => genFunction(id,blockItemList)
+    case Prog(funList: List[Fun]) =>
+      var output = ""
+      //map of function name to number of arguments and if declared
+      var funMap = new collection.immutable.HashMap[String, (Int, Boolean)]
+      for (fun <- funList) {
+        val isDefinition = fun.blockItemList.nonEmpty
+        funMap.get(fun.name) match {
+          case Some((_, true)) if isDefinition => throw CodeGenError("Two definitions of function: " + fun.name)
+          case Some((n, _)) => if (n != fun.parameters.length)
+            throw CodeGenError("Two declarations of function " + fun.name + " with different numbers of parameters")
+          case None => funMap += (fun.name -> (fun.parameters.length, isDefinition))
+        }
+        if(isDefinition) output += genFunction(fun,funMap)
+      }
+      output
   }
-  private def genFunction(id:String, blockItems:List[BlockItem]) = {
+
+  private def genFunction(fun : Fun,funMap:collection.immutable.HashMap[String,(Int,Boolean)]):String = {
     val stackIndex = -8
-    varMap = new collection.immutable.HashMap[String,Int]()
-    s".globl $id\n$id:\npush %rbp\nmov %rsp, %rbp\n"+
-      genBlock(blockItems,Context(varMap,stackIndex,None,None))
+    val id = fun.name
+    val blockItems = fun.blockItemList
+    var varMap = new collection.immutable.HashMap[String,Int]()
+    var currentScope:List[String] = List()
+    var paramOffset = 16
+    for(param <- fun.parameters) {
+      varMap = varMap + (param->paramOffset)
+      currentScope = param::currentScope
+      paramOffset += 8
+    }
+    s".globl $id\n"+
+      s"$id:\n"+
+      "push %rbp\n"+
+      "mov %rsp, %rbp\n"+
+      genBlock(blockItems,Context(varMap,stackIndex,None,None,funMap),currentScope:List[String])
     //if no return in main function then return 0
     //if(id=="main") string += "mov $0, %eax\nret\n"
   }
@@ -25,19 +52,20 @@ object CodeGen {
       else {val s =exp match{
         case None => "" case Some(e)=>genExpr(e,context)}
         val stackIndex= context.stackIndex
-        (s+"push %rax\n",Context(context.varMap +
-          (id->stackIndex),context.stackIndex-8,
-          context.breakLabel,context.continueLabel),id::currentScope)}
+        (s+"push %rax\n",
+          Context(context.varMap + (id->stackIndex),
+          context.stackIndex-8, context.breakLabel,context.continueLabel,context.funMap),id::currentScope)}
   }
-  private def genBlock(blockItems: List[BlockItem], context:Context):String= {
+
+  private def genBlock(blockItems: List[BlockItem], context:Context,currentScope:List[String]):String= {
     var output = ""
-    var currentScope:List[String] = List()
+    var currentS:List[String] = currentScope
     var currentContext = context
     for (blockItem <- blockItems) {
       blockItem match {
         case Declare(id, exp) =>
-          val result=genDeclare(id, exp, currentContext, currentScope)
-          currentScope=result._3
+          val result=genDeclare(id, exp, currentContext, currentS)
+          currentS = result._3
           currentContext=result._2
           output+=result._1
         case _ if blockItem.isInstanceOf[Statement] =>
@@ -45,7 +73,7 @@ object CodeGen {
       }
     }
     //pop items declared in this block
-    val bytes_to_deallocate = 8*currentScope.length
+    val bytes_to_deallocate = 8*currentS.length
     if(bytes_to_deallocate>0) output+=s"add $$$bytes_to_deallocate, %rsp\n"
     output
   }
@@ -148,6 +176,23 @@ object CodeGen {
         l1+":\n"+
         genExpr(e3,context)+
         l2+":\n"
+
+    case FunCall(name,arguments) =>
+      //push arguments to stack in reverse order
+      context.funMap.get(name) match {
+        case None => throw CodeGenError("Function: "+name+" not declared before called")
+        case Some((n,_)) =>
+          if(n!=arguments.length) throw CodeGenError("Function "+name+" called with wrong number of arguments")
+      }
+      var output = ""
+      for(arg <-arguments.reverse) {
+        output += genExpr(arg,context) +
+          "push %rax\n"
+      }
+      val bytes_to_remove = 8*arguments.length
+      output+
+        s"call $name\n"+
+        s"add $$$bytes_to_remove, %rsp\n"
   }
   private def genStatement(ast: Statement,context:Context): String = ast match {
     case Expression(exp) =>
@@ -175,7 +220,7 @@ object CodeGen {
               genStatement(s, context) +
               l2 + ":\n"})
 
-    case Compound(blockItems:List[BlockItem]) => genBlock(blockItems,context)
+    case Compound(blockItems:List[BlockItem]) => genBlock(blockItems,context,List())
 
     case While(condition,body) =>
       val (l1,l2)=(genLabel,genLabel)
@@ -183,13 +228,13 @@ object CodeGen {
         genExpr(condition,context)+
         "cmp $0, %rax\n"+
         "je "+l2+"\n"+
-        genStatement(body,Context(context.varMap,context.stackIndex,Some(l2),Some(l1)))+
+        genStatement(body,Context(context.varMap,context.stackIndex,Some(l2),Some(l1),context.funMap))+
         "jmp "+l1+"\n"+
           l2+":\n"
 
     case Do(body,condition) => val (l1,l2)=(genLabel,genLabel)
       l1+":\n"+
-      genStatement(body,Context(context.varMap,context.stackIndex,Some(l2),Some(l1)))+
+      genStatement(body,Context(context.varMap,context.stackIndex,Some(l2),Some(l1),context.funMap))+
       genExpr(condition,context)+
       "cmp $0, %rax\n"+
       "jne "+l1+"\n"+
@@ -203,7 +248,7 @@ object CodeGen {
         genExpr(condition,context)+
         "cmp $0, %rax\n"+
         "je "+l2+"\n"+
-        genStatement(body,Context(context.varMap,context.stackIndex,Some(l2),Some(l3)))+
+        genStatement(body,Context(context.varMap,context.stackIndex,Some(l2),Some(l3),context.funMap))+
         l3+":\n"+
         (post match{case None=> "" case Some(e)=>genExpr(e,context)})+
         "jmp "+l1+"\n"+
@@ -224,7 +269,7 @@ object CodeGen {
         "cmp $0, %rax\n"+
         "je "+l2+"\n"+
       //gen statement
-        genStatement(body,Context(newContext.varMap,newContext.stackIndex,Some(l2),Some(l3)))+
+        genStatement(body,Context(newContext.varMap,newContext.stackIndex,Some(l2),Some(l3),context.funMap))+
         l3+":\n"+
         (post match{case None=> "" case Some(e)=>genExpr(e,newContext)})+
         "jmp "+l1+"\n"+

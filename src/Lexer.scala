@@ -6,7 +6,6 @@ case object CloseBrace extends Token
 case object OpenParenthesis extends Token
 case object CloseParenthesis extends Token
 case object Semicolon extends Token
-case object EOF extends Token
 case class Keyword(s: String) extends Token
 case class Identifier(s: String) extends Token
 case class IntegerLiteral(v : Int) extends Token
@@ -39,6 +38,8 @@ case object Equal extends Token
 
 case object Colon extends Token
 case object QuestionMark extends Token
+
+case object Comma extends Token
 
 case class LexError(message: String) extends Exception(message)
 
@@ -111,6 +112,7 @@ class Lexer(buffer: collection.BufferedIterator[Char]) {
       case '^' => advance; Some(Xor)
       case ':' => advance; Some(Colon)
       case '?' => advance; Some(QuestionMark)
+      case ',' => advance; Some(Comma)
       case _ => throw LexError("Invalid character: "+c)
     }
   }
