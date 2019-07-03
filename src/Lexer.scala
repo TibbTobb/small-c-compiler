@@ -43,7 +43,7 @@ case object QuestionMark extends Token
 case class LexError(message: String) extends Exception(message)
 
 class Lexer(buffer: collection.BufferedIterator[Char]) {
-  private val keyWords = List("int", "return", "if", "else")
+  private val keyWords = List("int", "return", "if", "else","for","while","do","break","continue")
   private def advance: Char = buffer next
   private def lookAhead: Option[Char] = buffer headOption
   @tailrec

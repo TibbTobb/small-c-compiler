@@ -1,3 +1,6 @@
+case class Context(varMap:collection.immutable.HashMap[String,Int],stackIndex:Int,
+                   breakLabel:Option[String],continueLabel:Option[String])
+
 object CodeGen {
   private var labelNum = 0
   private var varMap = new collection.immutable.HashMap[String,Int]()
@@ -12,27 +15,27 @@ object CodeGen {
   private def genFunction(id:String, blockItems:List[BlockItem]) = {
     val stackIndex = -8
     varMap = new collection.immutable.HashMap[String,Int]()
-    s".globl $id\n$id:\npush %rbp\nmov %rsp, %rbp\n"+genBlock(blockItems,varMap,stackIndex)
+    s".globl $id\n$id:\npush %rbp\nmov %rsp, %rbp\n"+genBlock(blockItems,Context(varMap,stackIndex,None,None))
     //if no return in main function then return 0
     //if(id=="main") string += "mov $0, %eax\nret\n"
   }
-  private def genDeclare(id:String,exp:Option[Exp],varMap:collection.immutable.HashMap[String,Int],stackIndex:Int,
-                         currentScope:List[String])  = {
+  private def genDeclare(id:String,exp:Option[Exp], context:Context,currentScope:List[String])  = {
       if(currentScope.contains(id)) throw CodeGenError("Variable: "+id+" in this scope")
       else {val s =exp match{
-        case None => "" case Some(e)=>genStatement(e,varMap,stackIndex)}
-        (s+"push %rax\n",varMap + (id->stackIndex),stackIndex-8,id::currentScope)}
+        case None => "" case Some(e)=>genExpr(e,context)}
+        val stackIndex= context.stackIndex
+        (s+"push %rax\n",Context(context.varMap + (id->stackIndex),context.stackIndex-8,
+          context.breakLabel,context.continueLabel),id::currentScope)}
   }
-  private def genBlock(blockItems: List[BlockItem], varMap:collection.immutable.HashMap[String,Int], stackIndex:Int):String= {
+  private def genBlock(blockItems: List[BlockItem], context:Context):String= {
     var output = ""
     var currentScope:List[String] = List()
-    var stackI:Int = stackIndex
-    var varM:collection.immutable.HashMap[String,Int] = varMap
+    var currentContext = context
     for (blockItem <- blockItems) {
       blockItem match {
-        case Declare(id, exp) => val result=genDeclare(id, exp, varM, stackI,currentScope)
-          varM=result._2;stackI=result._3;currentScope=result._4;output+=result._1
-        case _ if blockItem.isInstanceOf[Statement] => output+=genStatement(blockItem.asInstanceOf[Statement],varM,stackI)
+        case Declare(id, exp) => val result=genDeclare(id, exp, currentContext, currentScope)
+          currentScope=result._3;currentContext=result._2;output+=result._1
+        case _ if blockItem.isInstanceOf[Statement] => output+=genStatement(blockItem.asInstanceOf[Statement],currentContext)
       }
     }
     //pop items declared in this block
@@ -68,22 +71,93 @@ object CodeGen {
       case OpShiftRight => genCalculate(e2,e1) + "shr %cl, %rax\n"
     }
   }
-  private def genStatement(ast: Statement,varMap:collection.immutable.HashMap[String,Int],stackIndex:Int): String = ast match {
-    case Assign(id, exp) => if(varMap.contains(id)) {val offset:Int = varMap(id);genStatement(exp,varMap,stackIndex)+
-      s"mov %rax, $offset(%rbp)\n"} else throw CodeGenError("Variable: "+id+" not defined before assignment")
-    case Var(id) => if(varMap.contains(id)) {val offset = varMap(id);s"mov $offset(%rbp), %rax\n"} else
-      throw CodeGenError("Variable: "+id+" not defined before reference")
+  private def genExpr(ast: Exp,context: Context):String = ast match {
+    case Assign(id, exp) => if (context.varMap.contains(id)) {
+      val offset: Int = context.varMap(id)
+      genExpr(exp, context) +
+        s"mov %rax, $offset(%rbp)\n"
+    } else throw CodeGenError("Variable: " + id + " not defined before assignment")
+    case Var(id) => if (context.varMap.contains(id)) {
+      val offset = context.varMap(id)
+      s"mov $offset(%rbp), %rax\n"
+    } else
+      throw CodeGenError("Variable: " + id + " not defined before reference")
     case Const(i) => s"mov $$$i, %rax\n"
-    case Return(exp) => genStatement(exp,varMap,stackIndex)+"mov %rbp, %rsp\npop %rbp\nret\n"
-    case UnOp(OpNegation, exp) => genStatement(exp,varMap,stackIndex) + "neg %rax\n"
-    case UnOp(OpBitwiseComp, exp) => genStatement(exp,varMap,stackIndex) + "not %rax\n"
-    case UnOp(OpLogicalNeg, exp) => genStatement(exp,varMap,stackIndex) + "cmp $0, %rax\nmov $0, %rax\nsete %al\n"
-    case BinOp(binaryOp, term, next_term) => genBinOp(binaryOp, genStatement(term,varMap,stackIndex), genStatement(next_term,varMap,stackIndex))
-    case Conditional(e1,e2,e3) => val l1=genLabel;val l2=genLabel;genStatement(e1,varMap,stackIndex)+"cmp $0, %rax\nje "+l1+"\n"+
-      genStatement(e2,varMap,stackIndex)+"jmp "+l2+"\n"+l1+":\n"+genStatement(e3,varMap,stackIndex)+l2+":\n"
-    case If(exp,s1,s2) => val l1=genLabel;genStatement(exp,varMap,stackIndex)+"cmp $0, %rax\nje "+l1+"\n"+genStatement(s1,varMap,stackIndex)+{s2 match {
-      case None => l1+":\n" case Some(s)=>val l2=genLabel;"jmp "+l2+"\n"+l1+":\n"+genStatement(s,varMap,stackIndex)+l2+":\n"}}
-    case Compound(blockItems:List[BlockItem]) => genBlock(blockItems,varMap,stackIndex)
+    case UnOp(OpNegation, exp) => genExpr(exp, context) + "neg %rax\n"
+    case UnOp(OpBitwiseComp, exp) => genExpr(exp, context) + "not %rax\n"
+    case UnOp(OpLogicalNeg, exp) => genExpr(exp, context) + "cmp $0, %rax\nmov $0, %rax\nsete %al\n"
+    case BinOp(binaryOp, term, next_term) => genBinOp(binaryOp, genExpr(term, context), genExpr(next_term, context))
+    case Conditional(e1,e2,e3) => val l1=genLabel;val l2=genLabel;genExpr(e1,context)+"cmp $0, %rax\nje "+l1+"\n"+
+      genExpr(e2,context)+"jmp "+l2+"\n"+l1+":\n"+genExpr(e3,context)+l2+":\n"
+  }
+  private def genStatement(ast: Statement,context:Context): String = ast match {
+    case Expression(exp) => exp match {case None => "" case Some(e)=>genExpr(e,context)}
+    case Return(exp) => genExpr(exp,context)+"mov %rbp, %rsp\npop %rbp\nret\n"
+    case If(exp, s1, s2) => val l1 = genLabel
+      genExpr(exp, context) + "cmp $0, %rax\nje " + l1 + "\n" + genStatement(s1, context) + {
+        s2 match {
+          case None => l1 + ":\n"
+          case Some(s) => val l2 = genLabel; "jmp " + l2 + "\n" + l1 + ":\n" + genStatement(s, context) + l2 + ":\n"
+        }
+      }
+    case Compound(blockItems:List[BlockItem]) => genBlock(blockItems,context)
+    case While(condition,body) => val (l1,l2)=(genLabel,genLabel)
+      l1+":\n"+
+        genExpr(condition,context)+
+        "cmp $0, %rax\n"+
+        "je "+l2+"\n"+
+        genStatement(body,Context(context.varMap,context.stackIndex,Some(l2),Some(l1)))+
+        "jmp "+l1+"\n"+
+          l2+":\n"
+    case Do(body,condition) => val (l1,l2)=(genLabel,genLabel)
+      l1+":\n"+
+      genStatement(body,Context(context.varMap,context.stackIndex,Some(l2),Some(l1)))+
+      genExpr(condition,context)+
+      "cmp $0, %rax\n"+
+      "jne "+l1+"\n"+
+      l2+":\n"
+      //TODO: create genFor to reduce duplicated code in For and ForDecl
+    case For(initial,condition,post,body) =>
+      val(l1,l2,l3)=(genLabel,genLabel,genLabel)
+      (initial match {case None => "" case Some(e)=>genExpr(e,context)})+
+        l1+":\n"+
+        genExpr(condition,context)+
+        "cmp $0, %rax\n"+
+        "je "+l2+"\n"+
+        genStatement(body,Context(context.varMap,context.stackIndex,Some(l2),Some(l3)))+
+        l3+":\n"+
+        (post match{case None=> "" case Some(e)=>genExpr(e,context)})+
+        "jmp "+l1+"\n"+
+        l2+":\n"
+    case ForDecl(init,condition,post,body) =>
+      val (l1,l2,l3)=(genLabel,genLabel,genLabel)
+      var newContext = context
+      //gen init
+      (init match{case Declare(id, exp)=>
+        //header is in its own block
+        val result=genDeclare(id,exp,newContext,List())
+        newContext=result._2
+        result._1})+
+      //gen condition
+        l1+":\n"+
+        genExpr(condition,newContext)+
+        "cmp $0, %rax\n"+
+        "je "+l2+"\n"+
+      //gen statement
+        genStatement(body,Context(newContext.varMap,newContext.stackIndex,Some(l2),Some(l3)))+
+        l3+":\n"+
+        (post match{case None=> "" case Some(e)=>genExpr(e,newContext)})+
+        "jmp "+l1+"\n"+
+        l2+":\n"+
+      //deallocate variable in init block
+        s"add $$8, %rsp\n"
+    case Break() =>
+      context.breakLabel match{
+        case Some(l)=>"jmp "+l+"\n"
+        case None=> throw CodeGenError("'break' outside of loop")}
+    case Continue() => context.continueLabel match{
+      case Some(l)=>"jmp "+l+"\n"
+      case None=> throw CodeGenError("'continue' outside of loop")}
   }
   private def genLabel = {labelNum+=1; "l"+labelNum.toString}
 }
