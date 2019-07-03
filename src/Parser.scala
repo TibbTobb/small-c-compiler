@@ -20,8 +20,9 @@ case class Return(exp: Exp) extends Statement {
 }
 
 case class If(exp:Exp, statement:Statement, elseStatement:Option[Statement]) extends Statement
-
+case class Compound(blockItems: List[BlockItem]) extends Statement
 abstract class Exp extends Statement
+
 case class Conditional(cond:Exp,ifExp:Exp,elseExp:Exp) extends Exp
 case class Assign(id:String, exp: Exp) extends Exp
 case class Var(id:String) extends Exp
@@ -36,8 +37,6 @@ case class Const(int: Int) extends Exp {
 case class BinOp(binaryOp: BinaryOp, exp: Exp, next_exp: Exp) extends Exp {
   override def toString: String = "("+exp.toString+binaryOp.toString+next_exp.toString+")"
 }
-
-
 
 abstract class UnaryOp extends AstNode
 case object OpNegation extends UnaryOp {
@@ -268,6 +267,9 @@ class Parser(tokens: List[Token]) {
       if(lookAhead==Keyword("else")){
         advance;s2=Some(parseStatement)}
       If(e,s,s2)
+    case OpenBrace => advance;val blockItems = new ArrayBuffer[BlockItem]
+      while(lookAhead != CloseBrace){blockItems.append(parseBlockItem)}
+      advance;Compound(blockItems.toList)
     case _ => val exp = parseExp; eat(Semicolon);exp
   }
   private def parseBlockItem: BlockItem = lookAhead match {
@@ -288,7 +290,11 @@ class Parser(tokens: List[Token]) {
     advance
     Fun(id, statementList.toList)
   }
-  def parseProgram : Program = Prog(parseFunDecl)
+  def parseProgram : Program = {
+    val funDecl = parseFunDecl
+    if (lookAhead != EOF) throw ParseError("Expected EOF but "+lookAhead+" read")
+    Prog(funDecl)
+  }
 
   private def parseId : String = advance match {
     case Identifier(s) => s
