@@ -1,4 +1,4 @@
-case class Context(varMap:collection.immutable.HashMap[String,Int],stackIndex:Int,
+case class Context(varMap:collection.immutable.HashMap[String,Either[Int,String]],stackIndex:Int,
                    breakLabel:Option[String],continueLabel:Option[String],
                    funMap:collection.immutable.HashMap[String,(Int,Boolean)])
 
@@ -10,32 +10,68 @@ object CodeGen {
   def output(string: String): Unit = output += string
 
   def genProg(ast: Program): String = ast match {
-    case Prog(funList: List[Fun]) =>
+    case Prog(topLevelItemList: List[TopLevelItem]) =>
       var output = ""
       //map of function name to number of arguments and if declared
       var funMap = new collection.immutable.HashMap[String, (Int, Boolean)]
-      for (fun <- funList) {
-        val isDefinition = fun.blockItemList.nonEmpty
-        funMap.get(fun.name) match {
-          case Some((_, true)) if isDefinition => throw CodeGenError("Two definitions of function: " + fun.name)
-          case Some((n, _)) => if (n != fun.parameters.length)
-            throw CodeGenError("Two declarations of function " + fun.name + " with different numbers of parameters")
-          case None => funMap += (fun.name -> (fun.parameters.length, isDefinition))
+      var varMap = new collection.immutable.HashMap[String,Either[Int,String]]
+      val undefinedGlobals = new collection.mutable.HashSet[String]()
+      val definedGlobals = new collection.mutable.HashSet[String]()
+      for (topLevelItem <- topLevelItemList) {
+        val context = Context(varMap,0,None,None,funMap)
+        topLevelItem match {
+          case Fun(name,parameters,blockItemList) =>
+            val isDefinition = blockItemList.nonEmpty
+            //check if two definitions with same name or two declarations with different number of parameters
+            funMap.get(name) match {
+              case Some((_, true)) if isDefinition => throw CodeGenError("Two definitions of function: " + name)
+              case Some((n, _)) => if (n != parameters.length)
+                throw CodeGenError("Two declarations of function " + name + " with different numbers of parameters")
+              case None => funMap = funMap +(name -> (parameters.length, isDefinition))
+            }
+            //check if global variable exists with name
+            varMap.get(name) match {
+              case Some(_) => throw CodeGenError("Trying to declare function with same name as global variable "+name)
+              case None =>
+            }
+            if (isDefinition) output += genFunction(Fun(name, parameters, blockItemList), context)
+          case Variable(name,constOption) =>
+            //check if function already exists with name
+            funMap.get(name) match {
+              case Some(_) => throw CodeGenError("Trying to declare global variable with same name as function "+name)
+              case None =>
+            }
+            //update list of undefined globals
+            constOption match {
+              case None => undefinedGlobals.add(name)
+              case Some(_) =>
+                undefinedGlobals.remove(name)
+                if(definedGlobals.contains(name)) throw CodeGenError("Global variable "+name+" defined twice")
+                definedGlobals.add(name)
+            }
+            val result = genDeclareGlobal(name,constOption,context.varMap)
+            varMap = result._2
+            output+=result._1
         }
-        if(isDefinition) output += genFunction(fun,funMap)
+      }
+      for(name <- undefinedGlobals) {
+        output+=".globl "+name+"\n"+
+        ".bss\n"+
+        ".align 8\n"+
+        name+":\n"+
+        ".zero 8\n"
       }
       output
   }
-
-  private def genFunction(fun : Fun,funMap:collection.immutable.HashMap[String,(Int,Boolean)]):String = {
+  private def genFunction(fun : Fun,context: Context):String = {
     val stackIndex = -8
     val id = fun.name
     val blockItems = fun.blockItemList
-    var varMap = new collection.immutable.HashMap[String,Int]()
+    var varMap = context.varMap
     var currentScope:List[String] = List()
     var paramOffset = 16
     for(param <- fun.parameters) {
-      varMap = varMap + (param->paramOffset)
+      varMap = varMap + (param->Left(paramOffset))
       currentScope = param::currentScope
       paramOffset += 8
     }
@@ -43,20 +79,37 @@ object CodeGen {
       s"$id:\n"+
       "push %rbp\n"+
       "mov %rsp, %rbp\n"+
-      genBlock(blockItems,Context(varMap,stackIndex,None,None,funMap),currentScope:List[String])
+      genBlock(blockItems,Context(varMap,stackIndex,None,None,context.funMap),currentScope:List[String])
     //if no return in main function then return 0
     //if(id=="main") string += "mov $0, %eax\nret\n"
   }
   private def genDeclare(id:String,exp:Option[Exp], context:Context,currentScope:List[String])  = {
       if(currentScope.contains(id)) throw CodeGenError("Variable: "+id+" in this scope")
       else {val s =exp match{
-        case None => "" case Some(e)=>genExpr(e,context)}
+          //only declared not defined
+        case None => ""
+          //defined
+        case Some(e)=>genExpr(e,context)+"push %rax\n"}
         val stackIndex= context.stackIndex
-        (s+"push %rax\n",
-          Context(context.varMap + (id->stackIndex),
+        (s, Context(context.varMap + (id->Left(stackIndex)),
           context.stackIndex-8, context.breakLabel,context.continueLabel,context.funMap),id::currentScope)}
   }
+  private def genDeclareGlobal(id:String, constOption:Option[Const],varMap:collection.immutable.HashMap[String,Either[Int,String]])  = {
+    val s = constOption match {
+        //only declared not defined
+      case None => ""
+        //defined
+      case Some(Const(i)) =>
+        ".globl " + id + "\n" +
+        ".data\n" +
+        ".align 8\n" +
+        id + ":\n" +
+        s".long $i\n" +
+        ".text\n"
+    }
+    (s, varMap + (id -> Right(id)))
 
+  }
   private def genBlock(blockItems: List[BlockItem], context:Context,currentScope:List[String]):String= {
     var output = ""
     var currentS:List[String] = currentScope
@@ -137,16 +190,20 @@ object CodeGen {
   private def genExpr(ast: Exp,context: Context):String = ast match {
     case Assign(id, exp) =>
       if (context.varMap.contains(id)) {
-        val offset: Int = context.varMap(id)
-        genExpr(exp, context) +
-        s"mov %rax, $offset(%rbp)\n"
-    } else throw CodeGenError("Variable: " + id + " not defined before assignment")
+        genExpr(exp,context)+(context.varMap(id) match {
+          case Left(offset) =>
+            s"mov %rax, $offset(%rbp)\n"
+          case Right(label) => s"mov %rax, $label(%rip)\n"
+        })
+    } else throw CodeGenError("Variable: " + id + " not declared before assignment")
 
     case Var(id) => if (context.varMap.contains(id)) {
-      val offset = context.varMap(id)
-      s"mov $offset(%rbp), %rax\n"
+      context.varMap(id) match {
+        case Left(offset) => s"mov $offset(%rbp), %rax\n"
+        case Right(label) => s"mov $label(%rip), %rax\n"
+      }
     } else
-      throw CodeGenError("Variable: " + id + " not defined before reference")
+      throw CodeGenError("Variable: " + id + " not declared before reference")
 
     case Const(i) => s"mov $$$i, %rax\n"
 

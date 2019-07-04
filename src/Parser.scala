@@ -4,13 +4,12 @@ abstract class AstNode
 
 abstract class Program extends AstNode
 
-case class Prog(funDeclList: List[FunDecl]) extends Program {
-  override def toString: String = funDeclList.toString
-}
+case class Prog(topLevelItemList: List[TopLevelItem]) extends Program
 
-abstract class FunDecl extends AstNode
+abstract class TopLevelItem extends AstNode
 
-case class Fun(name: String, parameters:List[String], blockItemList: List[BlockItem]) extends FunDecl {
+case class Variable(name:String,const:Option[Const]) extends TopLevelItem
+case class Fun(name: String, parameters:List[String], blockItemList: List[BlockItem]) extends TopLevelItem {
   override def toString: String = "FUN " + name + ":\n"+"Parameters:"+parameters.toString()+"\n"+ blockItemList.toString+"\n"
 }
 
@@ -428,8 +427,7 @@ class Parser(tokens: List[Token]) {
     case _ => parseStatement
   }
 
-  private def parseFunDecl: FunDecl = {
-    eat(Keyword("int"))
+  private def parseFun: Fun = {
     val id = parseId
     eat(OpenParenthesis)
     val parameters = new ArrayBuffer[String]
@@ -451,13 +449,34 @@ class Parser(tokens: List[Token]) {
     } else eat(Semicolon)
     Fun(id, parameters.toList,statementList.toList)
   }
+  def parseGlobalVariable:TopLevelItem = {
+    val id = parseId
+    var const:Option[Const] = None
+    if(lookAhead == Equal) {
+      advance
+      advance match {
+        case IntegerLiteral(i) => const = Some(Const(i))
+        case t => throw ParseError(parseErrorMessage("Integer literal",t))
+      }
+    }
+    eat(Semicolon)
+    Variable(id,const)
+  }
+  def parseTopLevel: TopLevelItem = {
+    eat(Keyword("int"))
+    lookAhead2Option match {
+      case None => throw ParseError("End of file reached when parsing top level item")
+      case Some(OpenParenthesis) => parseFun
+      case _ => parseGlobalVariable
+    }
+  }
 
   def parseProgram: Program = {
-    val funDeclList = new ArrayBuffer[FunDecl]
+    val topLevelList = new ArrayBuffer[TopLevelItem]
     while(position!=tokens.length) {
-      funDeclList.append(parseFunDecl)
+      topLevelList.append(parseTopLevel)
     }
-    Prog(funDeclList.toList)
+    Prog(topLevelList.toList)
   }
 
   private def parseId: String = advance match {
